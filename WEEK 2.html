@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weekly Multi-Depot Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+body { font-family:"Segoe UI",Arial,sans-serif; background:#f8fafc; padding:20px; color:#333; }
+input, textarea { width:100%; padding:10px; margin-bottom:10px; border-radius:8px; border:1px solid #ccc; font-size:14px; }
+button { padding:10px 20px; border:none; border-radius:6px; background:#0078d7; color:#fff; font-weight:bold; cursor:pointer; margin-right:10px; }
+button:hover { background:#005fa3; }
+canvas{ margin-top:20px; max-width:100%; background:#fff; border:1px solid #ccc; border-radius:10px; }
+.report { margin-top:20px; background:#fff; padding:20px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.08); }
+table { border-collapse:collapse; width:100%; }
+table, th, td { border:1px solid #ccc; padding:5px; text-align:right; }
+th { background:#f0f0f0; text-align:left; }
+</style>
+</head>
+<body>
+
+<h2>Weekly Multi-Depot Report</h2>
+
+<h3>Enter Depot Data</h3>
+<input type="text" id="depotName" placeholder="Depot Name">
+<h4>Week 1 Data:</h4>
+<textarea id="week1Data" placeholder="Paste Week 1 data"></textarea>
+<h4>Week 2 Data:</h4>
+<textarea id="week2Data" placeholder="Paste Week 2 data"></textarea>
+<button onclick="addDepot()">➕ Add Depot</button>
+<button onclick="generateWeeklyReport()">📊 Generate Final Report</button>
+
+<div id="addedDepots" class="report">
+<h4>Depots Added:</h4>
+<ul id="depotList"></ul>
+</div>
+
+<div id="chartsContainer" class="report"></div>
+
+<script>
+// Internal storage
+let depotsData = [];
+
+// Parse SAP product data
+function parseProducts(text){
+    const productRegex = /(.*?) \((.*?)\/Unit\)[\s\S]*?Value\s+TSH\s+([\d,]+)[\s\S]*?Quantity\s+(\d+)\s+\(([\d,]+) KGs\)/g;
+    let data = {};
+    let quantities = {};
+    let match;
+    while((match = productRegex.exec(text))!==null){
+        const product = match[1].trim();
+        data[product] = parseFloat(match[3].replace(/,/g,''))||0;
+        quantities[product] = parseInt(match[4])||0;
+    }
+    return {values:data, quantities:quantities};
+}
+
+// Add depot
+function addDepot(){
+    const name = document.getElementById("depotName").value.trim();
+    const w1 = document.getElementById("week1Data").value.trim();
+    const w2 = document.getElementById("week2Data").value.trim();
+    if(!name || (!w1 && !w2)){ alert("Enter depot name and at least one week's data."); return; }
+    depotsData.push({name:name, week1:w1, week2:w2});
+    document.getElementById("depotList").innerHTML += `<li>${name}</li>`;
+    document.getElementById("depotName").value="";
+    document.getElementById("week1Data").value="";
+    document.getElementById("week2Data").value="";
+}
+
+// Generate report
+function generateWeeklyReport(){
+    if(depotsData.length===0){ alert("No depots added."); return;}
+    const wb = XLSX.utils.book_new();
+    document.getElementById("chartsContainer").innerHTML = "";
+
+    depotsData.forEach(d=>{
+        const p1 = parseProducts(d.week1);
+        const p2 = parseProducts(d.week2);
+        const allProducts = Array.from(new Set([...Object.keys(p1.values), ...Object.keys(p2.values)]));
+
+        // Build sheet data
+        let sheetData = [];
+        let totalValue1=0, totalValue2=0, totalQty=0;
+        allProducts.forEach(p=>{
+            const w1 = p1.values[p]||0;
+            const w2 = p2.values[p]||0;
+            const qty = p2.quantities[p]||p1.quantities[p]||0;
+            const change = w1===0 && w2===0 ? 0 : ((w2-w1)/(w1||1))*100;
+            sheetData.push({Product:p, Week1:w1, Week2:w2, Quantity:qty, Change:change.toFixed(1)});
+            totalValue1 += w1; totalValue2 += w2; totalQty += qty;
+        });
+        sheetData.push({Product:"TOTAL", Week1:totalValue1, Week2:totalValue2, Quantity:totalQty, Change:""});
+
+        // Excel formatting
+        const ws = XLSX.utils.json_to_sheet(sheetData, {header:["Product","Week1","Week2","Quantity","Change"]});
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        for(let R=0; R<=range.e.r; ++R){
+            for(let C=1; C<=3; ++C){
+                const cell_address = XLSX.utils.encode_cell({r:R,c:C});
+                if(!ws[cell_address]) continue;
+                ws[cell_address].t = "n";
+                ws[cell_address].z = "#,##0"; // 3-digit comma formatting
+            }
+        }
+        ws['!cols'] = [{wpx:200},{wpx:120},{wpx:120},{wpx:80},{wpx:80}];
+        ws['!rows'] = sheetData.map(()=>({hpt:20}));
+        ws['!autofilter'] = {ref:ws['!ref']};
+        XLSX.utils.book_append_sheet(wb, ws, d.name.substring(0,31));
+
+        // Build chart
+        const canvas = document.createElement("canvas");
+        canvas.id = "chart_"+d.name.replace(/\s/g,'_');
+        document.getElementById("chartsContainer").appendChild(document.createElement("h4")).innerText = d.name + " - Top Products";
+        document.getElementById("chartsContainer").appendChild(canvas);
+
+        const topProducts = allProducts.sort((a,b)=> (p2.values[b]||0) - (p2.values[a]||0)).slice(0,10);
+        new Chart(canvas.getContext("2d"),{
+            type:'bar',
+            data:{
+                labels: topProducts,
+                datasets:[
+                    {label:"Week1", data:topProducts.map(p=>p1.values[p]||0), backgroundColor:"rgba(54,162,235,0.6)"},
+                    {label:"Week2", data:topProducts.map(p=>p2.values[p]||0), backgroundColor:"rgba(255,99,132,0.6)"}
+                ]
+            },
+            options:{
+                plugins:{ legend:{position:'top'}, datalabels:{color:'black', anchor:'end', align:'end', formatter:v=>v.toLocaleString()} },
+                responsive:true,
+                scales:{ x:{ticks:{autoSkip:false}}, y:{beginAtZero:true} }
+            },
+            plugins:[ChartDataLabels]
+        });
+    });
+
+    XLSX.writeFile(wb,"Weekly_All_Depots.xlsx");
+    alert("Excel report generated with totals and formatting!");
+}
+</script>
+</body>
+</html>
